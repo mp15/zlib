@@ -797,9 +797,6 @@ else
     HAVE_PCLMULQDQ_INTRIN=0
 fi
 
-DEFLATE_QUICK_o=""
-DEFLATE_QUICK_lo=""
-
 # Set ARCH specific FLAGS
 case "${ARCH}" in
     x86_64)
@@ -844,9 +841,6 @@ case "${ARCH}" in
 
         CFLAGS="${CFLAGS} -DUSE_QUICK -DUSE_MEDIUM"
         SFLAGS="${SFLAGS} -DUSE_QUICK -DUSE_MEDIUM"
-
-        DEFLATE_QUICK_o="deflate_quick.o"
-        DEFLATE_QUICK_lo="deflate_quick.lo"
     ;;
     i386 | i486 | i586 | i686)
         OBJC="${OBJC} x86.o"
@@ -890,9 +884,6 @@ case "${ARCH}" in
 
         CFLAGS="${CFLAGS} -DUSE_QUICK -DUSE_MEDIUM"
         SFLAGS="${SFLAGS} -DUSE_QUICK -DUSE_MEDIUM"
-
-        DEFLATE_QUICK_o="deflate_quick.o"
-        DEFLATE_QUICK_lo="deflate_quick.lo"
     ;;
 esac
 
@@ -931,10 +922,8 @@ echo FILL_WINDOW_SSE_o = ${FILL_WINDOW_SSE_o} >> configure.log
 echo FILL_WINDOW_SSE_lo= ${FILL_WINDOW_SSE_lo} >> configure.log
 echo CRC_FOLDING_o = ${CRC_FOLDING_o} >> configure.log
 echo CRC_FOLDING_lo= ${CRC_FOLDING_lo} >> configure.log
-echo DEFLATE_QUICK_o=${DEFLATE_QUICK_o} >> configure.log
-echo DEFLATE_QUICK_lo=${DEFLATE_QUICK_lo} >> configure.log
 
-# udpate Makefile with the configure results
+# update Makefile with the configure results
 sed < Makefile.in "
 /^CC *=/s#=.*#=$CC#
 /^CFLAGS *=/s#=.*#=$CFLAGS#
@@ -966,8 +955,6 @@ sed < Makefile.in "
 /^FILL_WINDOW_SSE_lo *=/s#=.*#=$FILL_WINDOW_SSE_lo#
 /^CRC_FOLDING_o *=/s#=.*#=$CRC_FOLDING_o#
 /^CRC_FOLDING_lo *=/s#=.*#=$CRC_FOLDING_lo#
-/^DEFLATE_QUICK_o *=/s#=.*#=$DEFLATE_QUICK_o#
-/^DEFLATE_QUICK_lo *=/s#=.*#=$DEFLATE_QUICK_lo#
 " > Makefile
 
 # create zlib.pc with the configure results

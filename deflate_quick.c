@@ -16,9 +16,11 @@
 #include "deflate.h"
 #include <immintrin.h>
 
-extern void fill_window_sse(deflate_state *s);
+extern void fill_window(deflate_state *s);
 extern void flush_pending  OF((z_streamp strm));
 
+#if defined(X86) || defined(X86_64)
+// Returns how many bytes match between src0 and src1
 local inline long compare258(z_const unsigned char *z_const src0,
         z_const unsigned char *z_const src1)
 {
@@ -30,33 +32,33 @@ local inline long compare258(z_const unsigned char *z_const src0,
 
     __asm__ __volatile__ (
     "1:"
-        "movdqu     -16(%[src0], %[ax]), %[xmm_src0]\n\t"
+        "movdqu     -16(%[src0], %[ax]), %[xmm_src0]\n\t" // xmm_src0 = src0[ebx]
+        "pcmpestri  $0x18, -16(%[src1], %[ax]), %[xmm_src0]\n\t" // compare 128 bits (length 16 bytes each set in ax and dx) of src1[ebx] with xmm_src0 (control flags EQUAL_EACH|NEGATIVE POLARITY) result in cx
+        "jc         2f\n\t" // if mismatch jump to miscompare
+        "add        $16, %[ax]\n\t" // move 16 bytes forward
+
+        "movdqu     -16(%[src0], %[ax]), %[xmm_src0]\n\t" // Unrolled loop of previous
         "pcmpestri  $0x18, -16(%[src1], %[ax]), %[xmm_src0]\n\t"
         "jc         2f\n\t"
         "add        $16, %[ax]\n\t"
 
-        "movdqu     -16(%[src0], %[ax]), %[xmm_src0]\n\t"
-        "pcmpestri  $0x18, -16(%[src1], %[ax]), %[xmm_src0]\n\t"
-        "jc         2f\n\t"
-        "add        $16, %[ax]\n\t"
-
-        "cmp        $256 + 16, %[ax]\n\t"
+        "cmp        $256 + 16, %[ax]\n\t" // if we've reached pos 256 break out of the loop
         "jb         1b\n\t"
 
 #ifdef X86
-        "movzwl     -16(%[src0], %[ax]), %[dx]\n\t"
+        "movzwl     -16(%[src0], %[ax]), %[dx]\n\t" // compare last 16 bits
 #else
         "movzwq     -16(%[src0], %[ax]), %[dx]\n\t"
 #endif
         "xorw       -16(%[src1], %[ax]), %%dx\n\t"
-        "jnz        3f\n\t"
+        "jnz        3f\n\t" // if it's wrong jump to miscompare16
 
         "add        $2, %[ax]\n\t"
         "jmp        4f\n\t"
-    "3:\n\t"
-        "rep; bsf   %[dx], %[cx]\n\t"
+    "3:\n\t" // miscompare16
+        "rep; bsf   %[dx], %[cx]\n\t" // determine which byte was first mismatch
         "shr        $3, %[cx]\n\t"
-    "2:"
+    "2:" // miscompare
         "add        %[cx], %[ax]\n\t"
     "4:"
     : [ax] "+a" (ax),
@@ -69,6 +71,45 @@ local inline long compare258(z_const unsigned char *z_const src0,
     );
     return ax - 16;
 }
+#else
+// generic C implementation
+#define uint128_t __uint128_t
+
+local inline long first_mismatch128(z_const uint128_t src0, z_const uint128_t src1)
+{
+	unsigned char* src0_128 = (unsigned char*) &src0;
+	unsigned char* src1_128 = (unsigned char*) &src1;
+	for (int i = 0; i < 16; ++i) {
+		if (src0_128[i] != src1_128[i]) return i;
+	}
+	return 0;
+}
+local inline long first_mismatch16(z_const uint16_t src0, z_const uint16_t src1)
+{
+	unsigned char* src0_8 = (unsigned char*) &src0;
+	unsigned char* src1_8 = (unsigned char*) &src1;
+	if (src0_8[0] != src1_8[0]) return 0;
+	if (src0_8[1] != src1_8[1]) return 1;
+	return 0;
+}
+
+local inline long compare258(z_const unsigned char *z_const src0,
+							 z_const unsigned char *z_const src1)
+{
+	int i;
+	for (i = 0; i < 256; i+=16)
+	{
+		uint128_t src0_128 = *((uint128_t*)src0+i);
+		uint128_t src1_128 = *((uint128_t*)src1+i);
+		if (src0_128 != src1_128) return i+first_mismatch128(src0_128, src1_128);
+	}
+	uint16_t src0_16 = *((uint16_t*)src0+i);
+	uint16_t src1_16 = *((uint16_t*)src1+i);
+	if (src0_16 != src1_16) return i+first_mismatch16(src0_16, src1_16);
+	return i+2;
+}
+
+#endif // defined(X86) || defined(X86_64)
 
 local z_const unsigned quick_len_codes[MAX_MATCH-MIN_MATCH+1];
 local z_const unsigned quick_dist_codes[8192];
@@ -140,17 +181,125 @@ local void static_emit_end_block(deflate_state *z_const s,
     flush_pending(s->strm);
 }
 
+/* crc32c.c -- compute CRC-32C using the Intel crc32 instruction
+ * Copyright (C) 2013 Mark Adler
+ * Version 1.1  1 Aug 2013  Mark Adler
+ */
+
+/*
+ This software is provided 'as-is', without any express or implied
+ warranty.  In no event will the author be held liable for any damages
+ arising from the use of this software.
+ 
+ Permission is granted to anyone to use this software for any purpose,
+ including commercial applications, and to alter it and redistribute it
+ freely, subject to the following restrictions:
+ 
+ 1. The origin of this software must not be misrepresented; you must not
+ claim that you wrote the original software. If you use this software
+ in a product, an acknowledgment in the product documentation would be
+ appreciated but is not required.
+ 2. Altered source versions must be plainly marked as such, and must not be
+ misrepresented as being the original software.
+ 3. This notice may not be removed or altered from any source distribution.
+ 
+ Mark Adler
+ madler@alumni.caltech.edu
+ */
+
+#include <pthread.h>
+/* CRC-32C (iSCSI) polynomial in reversed bit order. */
+#define POLY 0x82f63b78
+
+/* Table for a quadword-at-a-time software crc. */
+static pthread_once_t crc32c_once_sw = PTHREAD_ONCE_INIT;
+static uint32_t crc32c_table[8][256];
+
+/* Construct table for software CRC-32C calculation. */
+static void crc32c_init_sw(void)
+{
+    uint32_t n, crc, k;
+	
+    for (n = 0; n < 256; n++) {
+        crc = n;
+        crc = crc & 1 ? (crc >> 1) ^ POLY : crc >> 1;
+        crc = crc & 1 ? (crc >> 1) ^ POLY : crc >> 1;
+        crc = crc & 1 ? (crc >> 1) ^ POLY : crc >> 1;
+        crc = crc & 1 ? (crc >> 1) ^ POLY : crc >> 1;
+        crc = crc & 1 ? (crc >> 1) ^ POLY : crc >> 1;
+        crc = crc & 1 ? (crc >> 1) ^ POLY : crc >> 1;
+        crc = crc & 1 ? (crc >> 1) ^ POLY : crc >> 1;
+        crc = crc & 1 ? (crc >> 1) ^ POLY : crc >> 1;
+        crc32c_table[0][n] = crc;
+    }
+    for (n = 0; n < 256; n++) {
+        crc = crc32c_table[0][n];
+        for (k = 1; k < 8; k++) {
+            crc = crc32c_table[0][crc & 0xff] ^ (crc >> 8);
+            crc32c_table[k][n] = crc;
+        }
+    }
+}
+
+/* Table-driven software version as a fall-back.  This is about 15 times slower
+ than using the hardware instructions.  This assumes little-endian integers,
+ as is the case on Intel processors that the assembler code here is for. */
+static uint32_t crc32c_sw(uint32_t crci, const void *buf, size_t len)
+{
+    const unsigned char *next = buf;
+    uint64_t crc;
+	
+    pthread_once(&crc32c_once_sw, crc32c_init_sw);
+    crc = crci ^ 0xffffffff;
+    while (len && ((uintptr_t)next & 7) != 0) {
+        crc = crc32c_table[0][(crc ^ *next++) & 0xff] ^ (crc >> 8);
+        len--;
+    }
+    while (len >= 8) {
+        crc ^= *(uint64_t *)next;
+        crc = crc32c_table[7][crc & 0xff] ^
+		crc32c_table[6][(crc >> 8) & 0xff] ^
+		crc32c_table[5][(crc >> 16) & 0xff] ^
+		crc32c_table[4][(crc >> 24) & 0xff] ^
+		crc32c_table[3][(crc >> 32) & 0xff] ^
+		crc32c_table[2][(crc >> 40) & 0xff] ^
+		crc32c_table[1][(crc >> 48) & 0xff] ^
+		crc32c_table[0][crc >> 56];
+        next += 8;
+        len -= 8;
+    }
+    while (len) {
+        crc = crc32c_table[0][(crc ^ *next++) & 0xff] ^ (crc >> 8);
+        len--;
+    }
+    return (uint32_t)crc ^ 0xffffffff;
+}
+
 local inline Pos quick_insert_string(deflate_state *z_const s, z_const Pos str)
 {
     Pos ret;
     unsigned h = 0;
 
-    __asm__ __volatile__ (
-        "crc32l (%[window], %[str], 1), %0\n\t"
-    : "+r" (h)
-    : [window] "r" (s->window),
-      [str] "r" ((long)str)
-    );
+#ifdef HAVE_SSE2
+#ifdef CHECK_SSE2
+	if ( x86_cpu_has_sse2 ) {
+#endif
+		__asm__ __volatile__ (
+							  "crc32l (%[window], %[str], 1), %0\n\t"
+							  : "+r" (h)
+							  : [window] "r" (s->window),
+							  [str] "r" ((long)str)
+							  );
+#ifdef CHECK_SSE2
+	}
+	else
+#else
+	if (0)
+#endif
+#endif
+	{
+		h = crc32c_sw( h, s->window + str, 4);
+	}
 
     ret = s->head[h & s->hash_mask];
     s->head[h & s->hash_mask] = str;
@@ -166,7 +315,7 @@ block_state deflate_quick(deflate_state *s, int flush)
 
     while (1) {
         if (s->lookahead < MIN_LOOKAHEAD) {
-            fill_window_sse(s);
+            fill_window(s);
             if (s->lookahead < MIN_LOOKAHEAD && flush == Z_NO_FLUSH) {
                 static_emit_end_block(s, 0);
                 return need_more;

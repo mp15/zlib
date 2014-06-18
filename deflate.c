@@ -71,7 +71,7 @@ const char deflate_copyright[] =
 typedef block_state (*compress_func) OF((deflate_state *s, int flush));
 /* Compression function. Returns the block state after the call. */
 
-local void fill_window    OF((deflate_state *s));
+ZLIB_INTERNAL void fill_window    OF((deflate_state *s));
 local block_state deflate_stored OF((deflate_state *s, int flush));
 local block_state deflate_fast   OF((deflate_state *s, int flush));
 block_state deflate_quick  OF((deflate_state *s, int flush));
@@ -1253,7 +1253,7 @@ extern void fill_window_sse(deflate_state *s);
 #endif
 local void fill_window_c(deflate_state *s);
 
-local void fill_window(deflate_state *s)
+void fill_window(deflate_state *s)
 {
 #ifdef HAVE_SSE2
 #ifdef CHECK_SSE2
